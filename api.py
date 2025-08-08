@@ -1,28 +1,31 @@
 import tempfile
 import asyncio
+import traceback
 from typing import List
+
 import requests
 from fastapi import FastAPI, HTTPException, Header
-from pydantic import BaseModel
-from main import load_pdf_text, split_text, store_in_chroma, answer_with_rag
-from fastapi.responses import JSONResponse
 from fastapi.concurrency import run_in_threadpool
-import traceback
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+
+from main import load_pdf_text, split_text, store_in_chroma, answer_with_rag
 
 app = FastAPI()
-
 PERSIST_DIR = "chroma_db"
 
-# Schemas
+# === Schemas ===
 class HackRxRequest(BaseModel):
-    documents: str  # URL
+    documents: str  # PDF URL
     questions: List[str]
 
 class HackRxResponse(BaseModel):
     answers: List[str]
 
+
+# === Utilities ===
 def download_pdf(url):
-    """Download PDF from URL to a temporary file using streaming"""
+    """Download PDF from URL to a temporary file using streaming."""
     response = requests.get(url, stream=True)
     if response.status_code != 200:
         raise HTTPException(status_code=400, detail="Failed to download PDF.")
@@ -31,9 +34,11 @@ def download_pdf(url):
     for chunk in response.iter_content(chunk_size=8192):
         temp.write(chunk)
     temp.close()
-    print(temp.name)
+    print(f"📄 PDF saved at: {temp.name}")
     return temp.name
 
+
+# === Endpoint ===
 @app.post("/hackrx/run", response_model=HackRxResponse)
 async def hackrx_run(request: HackRxRequest, authorization: str = Header(None)):
     if not authorization or not authorization.startswith("Bearer "):
@@ -42,15 +47,15 @@ async def hackrx_run(request: HackRxRequest, authorization: str = Header(None)):
     try:
         print("🚀 Starting HackRx pipeline...")
 
-        # 1. Download and extract PDF
+        # Step 1: Download & extract text
         pdf_path = await run_in_threadpool(download_pdf, request.documents)
         text = await run_in_threadpool(load_pdf_text, pdf_path)
         docs = await run_in_threadpool(split_text, text)
 
-        # 2. Store in vector DB (blocking)
+        # Step 2: Store chunks in ChromaDB
         vectordb = await run_in_threadpool(store_in_chroma, docs, PERSIST_DIR)
 
-        # 3. Answer questions in parallel
+        # Step 3: Run questions in parallel
         answers = await asyncio.gather(*[
             run_in_threadpool(answer_with_rag, vectordb, question)
             for question in request.questions

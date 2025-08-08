@@ -1,20 +1,33 @@
+import os
 import pdfplumber
 from dotenv import load_dotenv
 from groq import Groq
 from langchain.chains import RetrievalQA
 from langchain.docstore.document import Document
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.embeddings import SentenceTransformerEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Chroma
 
+# Prevent tokenizers from parallelizing after fork
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+# Load .env variables
 load_dotenv()
 
+# Global constants
 client = Groq()
 persist_directory = "chroma_db"
 pdf_path = "/Users/vinayak/IdeaProjects/python/AI/GenAI/HackRx/temp/policy.pdf"
 rebuild = False  # Set to False to load existing DB
+
+# ✅ Improved embedding model
+embedding_function = HuggingFaceEmbeddings(
+    model_name="sentence-transformers/all-mpnet-base-v2"
+)
+
+# Example questions
 body = {
-    "documents": "https://hackrx.blob.core.windows.net/assets/policy.pdf?sv=2023-01-03&st=2025-07-04T09%3A11%3A24Z&se=2027-07-05T09%3A11%3A00Z&sr=b&sp=r&sig=N4a9OU0w0QXO6AOIBiu4bpl7AXvEZogeT%2FjUHNO7HzQ%3D",
+    "documents": "https://hackrx.blob.core.windows.net/assets/policy.pdf?...",
     "questions": [
         "What is the grace period for premium payment under the National Parivar Mediclaim Plus Policy?",
         "What is the waiting period for pre-existing diseases (PED) to be covered?",
@@ -38,7 +51,7 @@ def load_pdf_text(pdf_path):
     return text
 
 
-def split_text(text, chunk_size=1000, chunk_overlap=150):
+def split_text(text, chunk_size=800, chunk_overlap=100):
     """Splits text into overlapping chunks with metadata."""
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=chunk_size,
@@ -50,23 +63,24 @@ def split_text(text, chunk_size=1000, chunk_overlap=150):
     return docs
 
 
+
 def store_in_chroma(docs, persist_directory="chroma_db"):
-    """Embeds and stores chunks in ChromaDB."""
-    embedding_function = SentenceTransformerEmbeddings(model_name="all-MiniLM-L6-v2")
-    print("📦 Creating vector store and embedding documents...")
-    vectordb = Chroma.from_documents(
-        documents=docs,
-        embedding=embedding_function,
-        persist_directory=persist_directory
-    )
+    batch_size = 32
+    print("📦 Creating vector store in batches...")
+    vectordb = Chroma(persist_directory=persist_directory, embedding_function=embedding_function)
+
+    for i in range(0, len(docs), batch_size):
+        batch = docs[i:i+batch_size]
+        vectordb.add_documents(batch)
+        print(f"✅ Added batch {i//batch_size + 1}")
+
     vectordb.persist()
-    print(f"✅ Stored {len(docs)} chunks in ChromaDB at '{persist_directory}'")
     return vectordb
+
 
 
 def load_chroma(persist_directory="chroma_db"):
     """Loads existing ChromaDB if available."""
-    embedding_function = SentenceTransformerEmbeddings(model_name="all-MiniLM-L6-v2")
     return Chroma(
         persist_directory=persist_directory,
         embedding_function=embedding_function
@@ -85,7 +99,7 @@ def query_chroma(vectordb, query, k=3):
 def answer_with_rag(vectordb, query, k=3):
     """Performs RAG manually using Groq SDK (non-streaming)."""
     retriever = vectordb.as_retriever()
-    docs = retriever.get_relevant_documents(query)
+    docs = retriever.invoke(query)  # retrieves similar documents
 
     # Combine top-k documents into a single context string
     context = "\n\n".join([doc.page_content for doc in docs[:k]])
@@ -103,20 +117,13 @@ def answer_with_rag(vectordb, query, k=3):
     try:
         completion = client.chat.completions.create(
             model="meta-llama/llama-4-scout-17b-16e-instruct",
-            messages=[
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ],
+            messages=[{"role": "user", "content": prompt}],
             temperature=1,
             max_completion_tokens=1024,
             top_p=1,
             stream=False,
-            stop=None,
         )
 
-        # Extract and return the content safely
         message = getattr(completion.choices[0].message, "content", None)
         if message is None:
             print("⚠️ No content returned from Groq:", completion)
@@ -138,10 +145,8 @@ def main():
         print("📁 Loading existing ChromaDB...")
         vectordb = load_chroma(persist_directory)
 
-    for i in body['questions']:
-        query = i
-        # query_chroma(vectordb, query)
-        answer_with_rag(vectordb, query)
+    for query in body['questions']:
+        print(answer_with_rag(vectordb, query))
 
 
 if __name__ == "__main__":
