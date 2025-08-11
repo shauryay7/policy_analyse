@@ -7,7 +7,7 @@ from groq import Groq
 from langchain.docstore.document import Document
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_community.vectorstores import Chroma
+from langchain_chroma import Chroma
 import shutil
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -19,7 +19,7 @@ os.makedirs(PERSIST_ROOT, exist_ok=True)
 
 # Embedding model
 embedding_function = HuggingFaceEmbeddings(
-    model_name="sentence-transformers/all-MiniLM-L12-v2"
+    model_name="sentence-transformers/all-mpnet-base-v2"
 )
 
 # Helpers
@@ -84,7 +84,7 @@ Question:
 """
     try:
         completion = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model="llama-3.1-8b-instant",
             messages=[{"role": "user", "content": prompt}],
             temperature=0,
             max_completion_tokens=1024,
